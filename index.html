@@ -123,6 +123,10 @@ textarea{min-height:90px;direction:ltr;font-size:13px}
 .acct .st{font-size:14px;margin-top:6px}
 .acct .st.ok{color:var(--olive)}.acct .st.bad{color:var(--bad)}
 </style>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
 </head>
 <body>
 <div id="app"></div>
@@ -240,18 +244,27 @@ function authErr(err) {
 }
 const amsg = t => { const m = $("#aMsg"); if (m) m.textContent = t; };
 function renderAuth() {
-  const host = $("#authHost"), need = cloud.ready && !cloud.user && !skipped();
-  if (!need) { host.innerHTML = ""; document.body.style.overflow = state.open ? "hidden" : ""; return; }
-  if (host.firstChild) return;
-  host.innerHTML = `<div class="auth"><div class="authcard"><h1>دفتر المزرعة</h1>
-    <p class="muted">سجّل دخولك عشان بياناتك تتحفظ أونلاين وتفتحها من أي جهاز.</p>
+  const host = $("#authHost");
+  let mode = "";
+  if (cloud.user && cloud.denied) mode = "denied";
+  else if (!cloud.user) mode = (cloud.ready || cloud.failed) ? "login" : "loading";
+  if (!mode) { host.innerHTML = ""; host.dataset.mode = ""; document.body.style.overflow = state.open ? "hidden" : ""; return; }
+  if (host.dataset.mode === mode) return;
+  host.dataset.mode = mode;
+  if (mode === "loading") host.innerHTML = `<div class="auth"><div class="authcard"><h1>دفتر المزرعة</h1><p class="muted">جارٍ التحميل…</p></div></div>`;
+  else if (mode === "denied") host.innerHTML = `<div class="auth"><div class="authcard"><h1>⛔ غير مصرّح</h1>
+    <p class="muted">الحساب <b dir="ltr">${esc((cloud.user && cloud.user.email) || "")}</b> مش مضاف في قايمة المستخدمين المسموح لهم. كلّم المسؤول عشان يضيف إيميلك، وبعدها ادخل تاني.</p>
+    <div class="row"><button class="btn" id="dLogout">تسجيل الخروج</button></div></div></div>`;
+  else host.innerHTML = `<div class="auth"><div class="authcard"><h1>دفتر المزرعة</h1>
+    <p class="muted">الدخول متاح للحسابات المصرّح لها بس. سجّل دخولك عشان بياناتك تتحفظ أونلاين.</p>
     <label class="f"><span>الإيميل</span><input type="email" id="aEmail" autocomplete="email" dir="ltr"></label>
     <label class="f" style="margin-top:10px"><span>الباسورد (6 حروف على الأقل)</span><input type="password" id="aPass" autocomplete="current-password" dir="ltr"></label>
     <div id="aMsg" class="amsg"></div>
     <div class="row"><button class="btn" id="aLogin">دخول</button><button class="btn alt" id="aSignup">إنشاء حساب</button></div>
-    <div class="row" style="justify-content:space-between"><button class="lnk" id="aReset">نسيت الباسورد؟</button><button class="lnk" id="aSkip">استخدام بدون حساب</button></div></div></div>`;
+    <div class="row"><button class="lnk" id="aReset">نسيت الباسورد؟</button></div></div></div>`;
   document.body.style.overflow = "hidden";
 }
+setTimeout(() => { if (!cloud.ready) { cloud.failed = true; renderAuth(); } }, 8000);
 function acctInner() {
   if (!cloud.ready) return `<h3>الحساب والمزامنة</h3><div class="small muted">جارٍ تحميل خدمة الحفظ أونلاين… لو فضلت كده اتأكد من الإنترنت.</div>`;
   if (!cloud.user) return `<h3>الحساب والمزامنة</h3><div class="small muted">مش مسجل دخول، فالبيانات على الجهاز ده بس.</div><div class="row"><button class="btn" id="cLogin">تسجيل الدخول</button></div>`;
@@ -458,6 +471,7 @@ document.addEventListener("click", e => {
     window.cloudApi.reset(em).then(() => amsg("اتبعتلك رسالة على الإيميل لتغيير الباسورد"), err => amsg(authErr(err))); return;
   }
   if (t.id === "aSkip") { try { sessionStorage.setItem("skipAuth", "1"); } catch (x) {} renderAuth(); return; }
+  if (t.id === "dLogout") { if (window.cloudApi) window.cloudApi.logout(); return; }
   if (t.id === "cLogin") { try { sessionStorage.removeItem("skipAuth"); } catch (x) {} renderAuth(); return; }
   if (t.id === "cSync") { if (window.cloudPushNow) window.cloudPushNow(); return; }
   if (t.id === "cLogout") { if (confirm("تسجيل الخروج هيمسح نسخة البيانات من الجهاز ده، وهتفضل محفوظة أونلاين. متأكد؟")) window.cloudApi.logout(); return; }
@@ -527,12 +541,16 @@ async function push() {
     if (tj !== treatSynced && !(treatSynced === null && tj === "[]")) jobs.push(setDoc(doc(db, "users", me, "meta", "treat"), { json: tj, ts: Date.now() }).then(() => { treatSynced = tj; }));
     await Promise.all(jobs);
     setStatus("☁️ تم الرفع " + new Date().toLocaleTimeString("ar-EG", { hour: "2-digit", minute: "2-digit" }), "ok");
-  } catch (e) { setStatus("⚠️ تعذر الرفع: " + (e.code || e.message), "bad"); }
+  } catch (e) { onErr(e); }
 }
-window.cloudPush = () => { if (!uid) return; clearTimeout(timer); timer = setTimeout(push, 1800); cloud.status = "⏳ جارٍ الحفظ…"; cloud.ok = ""; const l = document.querySelector("#cloudLine"); if (l) l.textContent = cloud.status; };
+window.cloudPush = () => { if (!uid || cloud.denied) return; clearTimeout(timer); timer = setTimeout(push, 1800); cloud.status = "⏳ جارٍ الحفظ…"; cloud.ok = ""; const l = document.querySelector("#cloudLine"); if (l) l.textContent = cloud.status; };
 window.cloudPushNow = () => { clearTimeout(timer); return push(); };
 window.addEventListener("online", () => { if (uid) window.cloudPushNow(); });
 
+function onErr(err) {
+  if ((err.code || "") === "permission-denied") { cloud.denied = true; clearTimeout(timer); window.onCloud(); }
+  else setStatus("⚠️ مشكلة في المزامنة: " + (err.code || err.message), "bad");
+}
 function startSync(u) {
   uid = u.uid; synced = {}; treatSynced = null;
   unsubs.push(onSnapshot(collection(db, "users", uid, "days"), snap => {
@@ -548,7 +566,7 @@ function startSync(u) {
     });
     if (changed) { saveLocal(); window.cloudChanged(); }
     if (!snap.metadata.hasPendingWrites && cloud.ok !== "bad" && !/جارٍ/.test(cloud.status)) setStatus(cloud.status && cloud.status.includes("تم الرفع") ? cloud.status : "☁️ متصل ومتزامن", "ok");
-  }, err => setStatus("⚠️ مشكلة في المزامنة: " + (err.code || err.message), "bad")));
+  }, onErr));
   unsubs.push(onSnapshot(doc(db, "users", uid, "meta", "treat"), s => {
     if (!s.exists()) return;
     const j = s.data().json, remote = JSON.parse(j), mine = store.treat || [], local = JSON.stringify(mine);
@@ -558,7 +576,7 @@ function startSync(u) {
       treatSynced = treatSynced === null ? "" : treatSynced; return;
     }
     store.treat = remote; treatSynced = j; saveLocal(); window.cloudChanged();
-  }, () => {}));
+  }, onErr));
   window.cloudPush();
 }
 function stopSync() { unsubs.forEach(f => f()); unsubs = []; uid = null; synced = {}; treatSynced = null; clearTimeout(timer); }
@@ -574,10 +592,11 @@ window.cloudApi = {
   }
 };
 onAuthStateChanged(auth, u => {
-  cloud.ready = true; cloud.user = u ? { email: u.email } : null; cloud.status = u ? "⏳ جارٍ الاتصال…" : ""; cloud.ok = "";
+  cloud.ready = true; cloud.denied = false; cloud.user = u ? { email: u.email } : null; cloud.status = u ? "⏳ جارٍ الاتصال…" : ""; cloud.ok = "";
   if (u) startSync(u); else stopSync();
   window.onCloud();
 });
 </script>
+<script>if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));</script>
 </body>
 </html>
